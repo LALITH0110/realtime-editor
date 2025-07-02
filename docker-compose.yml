@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  postgres:
+    container_name: collabedge-postgres
+    image: postgres:14-alpine
+    environment:
+      POSTGRES_DB: collabedge
+      POSTGRES_USER: collabedge
+      POSTGRES_PASSWORD: collabedge
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./backend/db/setup.sql:/docker-entrypoint-initdb.d/setup.sql
+    ports:
+      - "5433:5432"
+    networks:
+      - collabedge-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U collabedge"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    container_name: collabedge-backend
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/collabedge
+      SPRING_DATASOURCE_USERNAME: collabedge
+      SPRING_DATASOURCE_PASSWORD: collabedge
+    ports:
+      - "8080:8080"
+    networks:
+      - collabedge-network
+
+volumes:
+  postgres-data:
+
+networks:
+  collabedge-network:
+    driver: bridge 
