@@ -114,6 +114,27 @@ export function EditorContainer({
 
   const { isConnected, lastMessage, sendMessage } = useWebSocket(`ws://localhost:8080/ws/room/${roomId}`)
 
+  // Send JOIN message when WebSocket connects (only once)
+  useEffect(() => {
+    if (isConnected && sendMessage) {
+      console.log(`🔗 WebSocket connected, sending JOIN message for room ${roomId}`);
+      
+      const joinMessage = {
+        type: "JOIN",
+        username: "User",
+        roomId: roomId,
+        timestamp: Date.now()
+      };
+      
+      try {
+        sendMessage(JSON.stringify(joinMessage));
+        console.log(`📤 Sent JOIN message for room ${roomId}`);
+      } catch (error) {
+        console.warn(`⚠️ Failed to send JOIN message:`, error);
+      }
+    }
+  }, [isConnected]); // Removed sendMessage and roomId from dependencies to prevent loops
+
   // Get room information from localStorage
   useEffect(() => {
     if (!isBrowser) return;
@@ -352,47 +373,53 @@ export function EditorContainer({
     
     init();
     
-    // Listen for storage events from other tabs
-    if (isBrowser) {
-      const handleStorageEvent = (event: StorageEvent) => {
-        if (!event || !event.key) return;
+          // Listen for storage events from other tabs with throttling
+      if (isBrowser) {
+        let storageUpdateTimeout: NodeJS.Timeout | null = null;
         
-        // Prevent processing our own storage updates
-        if (event.storageArea === sessionStorage) return;
-        
-        if (event.key === `room_${roomId}_documents` && event.newValue) {
-          try {
-            const docs = JSON.parse(event.newValue);
-            console.log(`Storage event: received updated documents from another tab for room ${roomId}:`, docs);
-            
-            // Only update if the documents are actually different
-            setDocuments(prevDocs => {
-              const docsChanged = JSON.stringify(prevDocs) !== JSON.stringify(docs);
-              return docsChanged ? docs : prevDocs;
-            });
-          } catch (error) {
-            console.error('Error parsing documents from storage event:', error);
+        const handleStorageEvent = (event: StorageEvent) => {
+          if (!event || !event.key) return;
+          
+          // Prevent processing our own storage updates
+          if (event.storageArea === sessionStorage) return;
+          
+          // Throttle storage updates to prevent excessive re-renders
+          if (storageUpdateTimeout) {
+            clearTimeout(storageUpdateTimeout);
           }
-        } else if (event.key === 'activeDocumentId' && event.newValue) {
-          // Update active tab if another tab changed it
-          try {
-            const storedData = JSON.parse(event.newValue);
-            if (storedData.roomId === roomId) {
-              console.log(`Changing active document to ${storedData.documentId} based on another tab's selection`);
-              setActiveTab(prev => prev !== storedData.documentId ? storedData.documentId : prev);
+          
+          storageUpdateTimeout = setTimeout(() => {
+            if (event.key === `room_${roomId}_documents` && event.newValue) {
+              try {
+                const docs = JSON.parse(event.newValue);
+                
+                // Only update if the documents are actually different and newer
+                setDocuments(prevDocs => {
+                  const currentHash = JSON.stringify(prevDocs);
+                  const newHash = JSON.stringify(docs);
+                  
+                  if (currentHash !== newHash) {
+                    console.log(`Storage event: updating documents from another tab for room ${roomId}`);
+                    return docs;
+                  }
+                  return prevDocs;
+                });
+              } catch (error) {
+                console.error('Error parsing documents from storage event:', error);
+              }
             }
-          } catch (error) {
-            console.error('Error parsing active document data:', error);
+          }, 500); // 500ms throttle
+        };
+        
+        window.addEventListener('storage', handleStorageEvent);
+        
+        return () => {
+          window.removeEventListener('storage', handleStorageEvent);
+          if (storageUpdateTimeout) {
+            clearTimeout(storageUpdateTimeout);
           }
-        }
-      };
-      
-      window.addEventListener('storage', handleStorageEvent);
-      
-      return () => {
-        window.removeEventListener('storage', handleStorageEvent);
-      };
-    }
+        };
+      }
   }, [roomId, editorType, fetchDocuments]);
 
   // Focus the input when editing starts
@@ -402,16 +429,25 @@ export function EditorContainer({
     }
   }, [editingTabId])
 
-  // Handle WebSocket messages
+  // Handle WebSocket messages with simplified filtering
   useEffect(() => {
     if (lastMessage) {
       try {
         const data = JSON.parse(lastMessage.data)
 
-        if (data.type === "DOCUMENT_UPDATE" || data.documentId) {
-          // Update document content
-          setDocuments((prev) =>
-            prev.map((doc) => {
+        if (data.type === "CONNECTED") {
+          console.log(`✅ Connected to room ${data.roomId}`);
+        } else if (data.type === "DOCUMENT_UPDATE" || data.documentId) {
+          // Only update if the content is actually different to prevent loops
+          setDocuments((prev) => {
+            const existingDoc = prev.find(doc => doc.id === data.documentId);
+            if (!existingDoc || existingDoc.content === data.content) {
+              return prev; // No change needed
+            }
+            
+            console.log(`🔄 Received real-time update for document ${data.documentId}`);
+            
+            return prev.map((doc) => {
               if (doc.id === data.documentId) {
                 // Handle both text and binary content
                 if (data.contentType && data.contentType.startsWith('image/')) {
@@ -426,29 +462,35 @@ export function EditorContainer({
                 }
               }
               return doc;
-            }),
-          )
-          setIsSyncing(false)
+            });
+          });
         } else if (data.type === "USER_JOINED") {
-          setConnectedUsers((prev) => [...prev, data.username])
+          console.log(`👤 User ${data.username} joined`);
+          setConnectedUsers((prev) => {
+            if (!prev.includes(data.username)) {
+              return [...prev, data.username];
+            }
+            return prev;
+          });
         } else if (data.type === "USER_LEFT") {
-          setConnectedUsers((prev) => prev.filter((user) => user !== data.username))
-        } else if (data.type === "USERS_LIST") {
-          setConnectedUsers(data.users)
+          console.log(`👤 User ${data.username} left`);
+          setConnectedUsers((prev) => prev.filter((user) => user !== data.username));
         }
       } catch (e) {
-        console.error("Failed to parse WebSocket message:", e)
+        console.error("Failed to parse WebSocket message:", e);
       }
     }
-  }, [lastMessage])
+  }, [lastMessage]);
 
   // Helper function to check if a string is a valid UUID - memoized
   const isUuid = useCallback((id: string): boolean => {
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
   }, []);
 
-  // Memoize handleContentChange to prevent re-renders
+  // Improved handleContentChange with better debouncing and WebSocket independence
   const handleContentChange = useCallback((documentId: string, content: string, contentType?: string, binaryContent?: ArrayBuffer) => {
+    const timestamp = Date.now();
+    
     // Immediately update the documents array in the component's state
     const updatedDocs = documents.map(doc => {
       if (doc.id === documentId) {
@@ -470,7 +512,7 @@ export function EditorContainer({
     // Show a syncing indicator in the UI
     setIsSyncing(true);
 
-    // Immediately save all documents to localStorage in the background
+    // ALWAYS save to localStorage immediately (independent of WebSocket)
     storeRoomDocumentsWrapper(roomId, updatedDocs);
     
     // Also save the specific document directly to localStorage
@@ -490,163 +532,92 @@ export function EditorContainer({
         try {
           const isUuidResult = isUuid(documentId);
           
-          // Check if we're dealing with an image (data URL)
-          const isImage = content && content.startsWith('data:image/');
-          let formData = null;
-          
           if (isUuidResult) {
             // Update existing document in database
-            console.log(`Auto-saving document ${documentId} to database...`);
+            console.log(`💾 Auto-saving document ${documentId} to database...`);
             
-            if (isImage) {
-              // For images, use the upload-image endpoint with FormData
-              formData = new FormData();
-              
-              // Convert data URL to Blob
-              const base64Data = content.split(',')[1];
-              const mimeType = content.split(';')[0].split(':')[1];
-              const binaryData = atob(base64Data);
-              const array = new Uint8Array(binaryData.length);
-              for (let i = 0; i < binaryData.length; i++) {
-                array[i] = binaryData.charCodeAt(i);
-              }
-              const blob = new Blob([array], { type: mimeType });
-              
-              formData.append('file', blob);
-              if (updatedDoc.name) {
-                formData.append('name', updatedDoc.name);
-              }
-              
-              const response = await fetch(`/api/rooms/${roomId}/documents/${documentId}/upload-image`, {
-                method: 'PUT',
-                body: formData
-              });
-              
-              if (response.ok) {
-                console.log(`Successfully auto-saved image document ${documentId} to database`);
-              } else {
-                console.error(`Failed to auto-save image document ${documentId} to database, status: ${response.status}`);
-              }
-            } else {
-              // For regular text content, use the standard JSON endpoint
-              const response = await fetch(`/api/rooms/${roomId}/documents/${documentId}`, {
-                method: 'PUT',
-                headers: {
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                  name: updatedDoc.name,
-                  type: updatedDoc.type.toLowerCase(),
-                  content: content,
-                }),
-              });
+            const response = await fetch(`/api/rooms/${roomId}/documents/${documentId}`, {
+              method: 'PUT',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                name: updatedDoc.name,
+                type: updatedDoc.type.toLowerCase(),
+                content: content,
+              }),
+            });
 
-              if (response.ok) {
-                console.log(`Successfully auto-saved document ${documentId} to database`);
-              } else {
-                console.error(`Failed to auto-save document ${documentId} to database, status: ${response.status}`);
-              }
+            if (response.ok) {
+              console.log(`✅ Successfully auto-saved document ${documentId} to database`);
+              setLastSaved(new Date());
+            } else {
+              console.error(`❌ Failed to auto-save document ${documentId} to database, status: ${response.status}`);
             }
           } else {
             // Create new document in database
-            console.log(`Auto-creating document ${updatedDoc.name} in database...`);
+            console.log(`💾 Auto-creating document ${updatedDoc.name} in database...`);
             
-            if (isImage) {
-              // For images, use the upload-image endpoint with FormData
-              formData = new FormData();
-              
-              // Convert data URL to Blob
-              const base64Data = content.split(',')[1];
-              const mimeType = content.split(';')[0].split(':')[1];
-              const binaryData = atob(base64Data);
-              const array = new Uint8Array(binaryData.length);
-              for (let i = 0; i < binaryData.length; i++) {
-                array[i] = binaryData.charCodeAt(i);
-              }
-              const blob = new Blob([array], { type: mimeType });
-              
-              formData.append('file', blob);
-              formData.append('name', updatedDoc.name);
-              
-              const response = await fetch(`/api/rooms/${roomId}/documents/upload-image`, {
-                method: 'POST',
-                body: formData
-              });
-              
-              if (response.ok) {
-                const createdDoc = await response.json();
-                console.log(`Successfully auto-created image document ${updatedDoc.name} in database with ID ${createdDoc.id}`);
-                
-                // Update the document ID in local state
-                const newUpdatedDocs = updatedDocs.map(doc => 
-                  doc.id === documentId ? { ...doc, id: createdDoc.id } : doc
-                );
-                setDocuments(newUpdatedDocs);
-                storeRoomDocumentsWrapper(roomId, newUpdatedDocs);
-                
-                // Update active tab if it was the created document
-                if (activeTab === documentId) {
-                  setActiveTab(createdDoc.id);
-                }
-              } else {
-                console.error(`Failed to auto-create image document ${updatedDoc.name} in database, status: ${response.status}`);
-              }
-            } else {
-              // For regular text content, use the standard JSON endpoint
-              const response = await fetch(`/api/rooms/${roomId}/documents`, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                  name: updatedDoc.name,
-                  type: updatedDoc.type.toLowerCase(),
-                  content: content,
-                }),
-              });
+            const response = await fetch(`/api/rooms/${roomId}/documents`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                name: updatedDoc.name,
+                type: updatedDoc.type.toLowerCase(),
+                content: content,
+              }),
+            });
 
-              if (response.ok) {
-                const createdDoc = await response.json();
-                console.log(`Successfully auto-created document ${updatedDoc.name} in database with ID ${createdDoc.id}`);
-                
-                // Update the document ID in local state
-                const newUpdatedDocs = updatedDocs.map(doc => 
-                  doc.id === documentId ? { ...doc, id: createdDoc.id } : doc
-                );
-                setDocuments(newUpdatedDocs);
-                storeRoomDocumentsWrapper(roomId, newUpdatedDocs);
-                
-                // Update active tab if it was the created document
-                if (activeTab === documentId) {
-                  setActiveTab(createdDoc.id);
-                }
-              } else {
-                console.error(`Failed to auto-create document ${updatedDoc.name} in database, status: ${response.status}`);
+            if (response.ok) {
+              const createdDoc = await response.json();
+              console.log(`✅ Successfully auto-created document ${updatedDoc.name} in database with ID ${createdDoc.id}`);
+              
+              // Update the document ID in local state
+              const newUpdatedDocs = updatedDocs.map(doc => 
+                doc.id === documentId ? { ...doc, id: createdDoc.id } : doc
+              );
+              setDocuments(newUpdatedDocs);
+              storeRoomDocumentsWrapper(roomId, newUpdatedDocs);
+              
+              // Update active tab if it was the created document
+              if (activeTab === documentId) {
+                setActiveTab(createdDoc.id);
               }
+              
+              setLastSaved(new Date());
+            } else {
+              console.error(`❌ Failed to auto-create document ${updatedDoc.name} in database, status: ${response.status}`);
             }
           }
         } catch (error) {
-          console.error(`Error auto-saving document ${documentId}:`, error);
+          console.error(`💥 Error auto-saving document ${documentId}:`, error);
         }
       }
       
       setIsSyncing(false);
-      setLastSaved(new Date());
-      console.log(`Content for doc ${documentId} auto-saved.`);
-    }, 2000); // Auto-save to database after 2 seconds of inactivity
+      console.log(`📄 Content for doc ${documentId} auto-saved.`);
+    }, 2000); // Reduced back to 2 seconds
 
-    // Send update to other users via WebSocket if UUID
+    // Send update to other users via WebSocket ONLY if connected (optional feature)
     if (isConnected && isUuid(documentId)) {
-      const message = {
-        documentId,
-        content,
-        contentType,
-        binaryContent,
-        timestamp: Date.now(),
-        username: "You" // Or get from state/auth
-      };
-      
-      sendMessage(JSON.stringify(message));
+      try {
+        const message = {
+          documentId,
+          content,
+          contentType,
+          binaryContent,
+          timestamp,
+          username: "You"
+        };
+        
+        sendMessage(JSON.stringify(message));
+        console.log(`🔄 Sent real-time update for document ${documentId}`);
+      } catch (error) {
+        console.warn(`⚠️ Failed to send real-time update (WebSocket issue):`, error);
+        // Don't fail the save operation if WebSocket fails
+      }
     }
   }, [documents, roomId, storeRoomDocumentsWrapper, forceSaveDocumentWrapper, activeTab, isConnected, sendMessage, isUuid]);
 
@@ -937,26 +908,7 @@ export function EditorContainer({
     )
   }
 
-  // Auto-save functionality
-  useEffect(() => {
-    // Set up auto-save timer
-    if (autoSaveTimerRef.current) {
-      clearInterval(autoSaveTimerRef.current);
-    }
-    
-    autoSaveTimerRef.current = setInterval(() => {
-      const activeDoc = documents.find(doc => doc.id === activeTab);
-      if (activeDoc && isSyncing) {
-        saveDocument();
-      }
-    }, 30000); // Auto-save every 30 seconds if there are changes
-    
-    return () => {
-      if (autoSaveTimerRef.current) {
-        clearInterval(autoSaveTimerRef.current);
-      }
-    };
-  }, [documents, activeTab, isSyncing]);
+  // Remove conflicting auto-save functionality - handled in handleContentChange now
 
   const saveDocument = async () => {
     if (!isBrowser) return;
@@ -1089,20 +1041,10 @@ export function EditorContainer({
 
   // Clean up when leaving the room
   useEffect(() => {
-    // Set up auto-save timer
-    autoSaveTimerRef.current = setInterval(() => {
-      // Save current documents to dev-storage
-      storeRoomDocumentsWrapper(roomId, documents);
-      console.log(`Auto-saved documents for room ${roomId}`);
-      
-      // Update last saved timestamp
-      setLastSaved(new Date());
-    }, 30000); // Auto-save every 30 seconds
-    
     return () => {
-      // Clear auto-save timer
+      // Clear any pending auto-save timer
       if (autoSaveTimerRef.current) {
-        clearInterval(autoSaveTimerRef.current);
+        clearTimeout(autoSaveTimerRef.current);
       }
       
       // Save documents one last time before unmounting
@@ -1118,20 +1060,7 @@ export function EditorContainer({
     createDefaultDocument();
   }, [roomId, createDefaultDocument]);
 
-  // When activeTab changes, share it with other tabs
-  useEffect(() => {
-    if (roomId && activeTab) {
-      try {
-        safelySetToLocalStorage('activeDocumentId', JSON.stringify({
-          roomId,
-          documentId: activeTab,
-          timestamp: Date.now()
-        }));
-      } catch (error) {
-        console.error('Error sharing active document ID with other tabs:', error);
-      }
-    }
-  }, [roomId, activeTab]);
+  // Remove activeTab sharing to reduce cross-tab conflicts
 
   return (
     <div className="flex flex-col h-screen">
