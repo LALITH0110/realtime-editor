@@ -1,5 +1,6 @@
 package com.example.demo.config;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -8,6 +9,7 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
@@ -18,24 +20,31 @@ import java.util.Arrays;
 @EnableWebSecurity
 public class SecurityConfig {
 
+    @Autowired
+    private JwtAuthenticationFilter jwtAuthenticationFilter;
+
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
-        // For demonstration purposes, we'll disable CSRF and allow all requests
-        // In a production environment, you'd want proper security
         http
             .cors().and()
             .csrf().disable()
             .authorizeRequests()
+                // Public endpoints
                 .antMatchers("/ws/**").permitAll()
-                .antMatchers("/api/**").permitAll()
-                .anyRequest().authenticated()
+                .antMatchers("/api/auth/**").permitAll()
+                .antMatchers("/api/rooms/*/join").permitAll()
+                .antMatchers("/api/rooms/key/*").permitAll()
+                .antMatchers("/api/rooms/access/*").authenticated()
+                .antMatchers("/api/rooms").permitAll()
+                .antMatchers("/api/test/**").permitAll()
+                // Protected endpoints requiring authentication
+                .antMatchers("/api/user/**").authenticated()
+                .anyRequest().permitAll()
             .and()
             .sessionManagement()
-                .sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED)
-                .maximumSessions(10)
-                .expiredUrl("/")
-                .and()
-                .invalidSessionUrl("/");
+                .sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+            .and()
+            .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
         
         return http.build();
     }
