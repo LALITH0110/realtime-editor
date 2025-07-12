@@ -14,15 +14,25 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Home, LogIn, Plus, User, UserPlus, Menu, X, FileText, RefreshCw } from "lucide-react"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { 
+  Home, 
+  LogIn, 
+  Plus, 
+  User, 
+  UserPlus, 
+  Menu, 
+  X, 
+  FileText, 
+  RefreshCw, 
+  Lock,
+  AlertCircle,
+  Loader2
+} from "lucide-react"
+import { useAuth } from "@/contexts/AuthContext"
+import { authService, type Room } from "@/lib/auth-service"
 
-type Room = {
-  id: string
-  name: string
-  isLocked: boolean
-}
-
-interface AppSidebarProps {
+type AppSidebarProps = {
   defaultOpen?: boolean
 }
 
@@ -30,154 +40,318 @@ export function AppSidebar({ defaultOpen = false }: AppSidebarProps) {
   const router = useRouter()
   const pathname = usePathname()
   const [isOpen, setIsOpen] = useState(defaultOpen)
-  const [isAuthenticated, setIsAuthenticated] = useState(false)
-  const [rooms, setRooms] = useState<Room[]>([
-    { id: "room-abc123", name: "Project Alpha", isLocked: false },
-    { id: "room-def456", name: "Team Brainstorm", isLocked: true },
-    { id: "room-ghi789", name: "Code Review", isLocked: false },
-  ])
+  const { isAuthenticated, user, login, signup, logout, isLoading, error, clearError } = useAuth()
+  
+  // Room management
+  const [rooms, setRooms] = useState<Room[]>([])
+  const [isLoadingRooms, setIsLoadingRooms] = useState(false)
+  const [roomsError, setRoomsError] = useState<string | null>(null)
+  
+  // Login form
   const [loginEmail, setLoginEmail] = useState("")
   const [loginPassword, setLoginPassword] = useState("")
+  const [showLoginDialog, setShowLoginDialog] = useState(false)
+  const [loginFormError, setLoginFormError] = useState<string | null>(null)
+  
+  // Signup form
   const [signupEmail, setSignupEmail] = useState("")
   const [signupPassword, setSignupPassword] = useState("")
   const [signupUsername, setSignupUsername] = useState("")
-  const [showLoginDialog, setShowLoginDialog] = useState(false)
   const [showSignupDialog, setShowSignupDialog] = useState(false)
+  const [signupFormError, setSignupFormError] = useState<string | null>(null)
 
   // Always start with the sidebar closed
   useEffect(() => {
     setIsOpen(false)
   }, [])
 
-  const handleLogin = (e: React.FormEvent) => {
-    e.preventDefault()
-    // In a real app, this would authenticate with your backend
-    setIsAuthenticated(true)
-    setLoginEmail("")
-    setLoginPassword("")
-    setShowLoginDialog(false)
+  // Fetch user rooms when authenticated
+  useEffect(() => {
+    if (isAuthenticated && user) {
+      fetchUserRooms()
+    } else {
+      setRooms([])
+    }
+  }, [isAuthenticated, user])
+
+  const fetchUserRooms = async () => {
+    if (!isAuthenticated) return
+    
+    setIsLoadingRooms(true)
+    setRoomsError(null)
+    
+    try {
+      const userRooms = await authService.getUserRooms()
+      setRooms(userRooms)
+      console.log(`Fetched ${userRooms.length} rooms for user ${user?.username}`)
+    } catch (error) {
+      console.error('Error fetching user rooms:', error)
+      setRoomsError(error instanceof Error ? error.message : 'Failed to load rooms')
+    } finally {
+      setIsLoadingRooms(false)
+    }
   }
 
-  const handleSignup = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
-    // In a real app, this would register with your backend
-    setIsAuthenticated(true)
-    setSignupEmail("")
-    setSignupPassword("")
-    setSignupUsername("")
-    setShowSignupDialog(false)
+    setLoginFormError(null)
+    
+    if (!loginEmail || !loginPassword) {
+      setLoginFormError("Please fill in all fields")
+      return
+    }
+
+    try {
+      await login(loginEmail, loginPassword)
+      setLoginEmail("")
+      setLoginPassword("")
+      setShowLoginDialog(false)
+      setLoginFormError(null)
+    } catch (error) {
+      setLoginFormError(error instanceof Error ? error.message : 'Login failed')
+    }
+  }
+
+  const handleSignup = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setSignupFormError(null)
+    
+    if (!signupUsername || !signupEmail || !signupPassword) {
+      setSignupFormError("Please fill in all fields")
+      return
+    }
+
+    if (signupPassword.length < 6) {
+      setSignupFormError("Password must be at least 6 characters")
+      return
+    }
+
+    try {
+      await signup(signupUsername, signupEmail, signupPassword)
+      setSignupEmail("")
+      setSignupPassword("")
+      setSignupUsername("")
+      setShowSignupDialog(false)
+      setSignupFormError(null)
+    } catch (error) {
+      setSignupFormError(error instanceof Error ? error.message : 'Signup failed')
+    }
   }
 
   const handleLogout = () => {
-    setIsAuthenticated(false)
+    logout()
+    setRooms([])
+    router.push('/')
   }
 
-  const navigateToRoom = (roomId: string) => {
-    router.push(`/room/${roomId}/select`)
+  const navigateToRoom = async (roomId: string) => {
+    // Find the room data
+    const room = rooms.find(r => r.id === roomId)
+    if (!room) {
+      console.error(`Room ${roomId} not found in user rooms`)
+      return
+    }
+    
+    console.log(`Navigating to room:`, room)
+    
+    try {
+      // For authenticated users navigating to their own rooms, we can assume they have access
+      // But we still need to check if it's password protected and handle accordingly
+      
+      if (room.isPasswordProtected) {
+        // For password-protected rooms, redirect to join page with room key
+        console.log(`Room ${room.name} is password protected, redirecting to join page`)
+        router.push(`/join?roomKey=${room.roomKey}`)
+        closeSidebar()
+        return
+      }
+      
+      // For non-password protected rooms or rooms the user created, 
+      // we can join directly via API to ensure proper permissions
+      console.log(`Joining room ${room.name} directly...`)
+      const joinResult = await authService.joinRoom(room.roomKey)
+      
+      if (joinResult) {
+        // Store the room metadata
+        localStorage.setItem('currentRoom', JSON.stringify(joinResult))
+        
+        // Navigate to the room
+        router.push(`/room/${roomId}/select`)
+        closeSidebar()
+      } else {
+        console.error(`Failed to join room ${room.name}`)
+        // Fallback to join page
+        router.push(`/join?roomKey=${room.roomKey}`)
+        closeSidebar()
+      }
+    } catch (error) {
+      console.error(`Error joining room ${room.name}:`, error)
+      // Fallback to join page
+      router.push(`/join?roomKey=${room.roomKey}`)
+      closeSidebar()
+    }
   }
 
   const toggleSidebar = () => {
     setIsOpen(!isOpen)
   }
 
+  const closeSidebar = () => {
+    setIsOpen(false)
+  }
+
+  const openLoginDialog = () => {
+    setShowLoginDialog(true)
+    setLoginFormError(null)
+    clearError()
+  }
+
+  const openSignupDialog = () => {
+    setShowSignupDialog(true)
+    setSignupFormError(null)
+    clearError()
+  }
+
+  // Show loading state during initial auth check
+  if (isLoading) {
+    return (
+      <div className="fixed inset-y-0 left-0 z-50 w-64 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border-r">
+        <div className="flex items-center justify-center h-full">
+          <Loader2 className="h-6 w-6 animate-spin" />
+        </div>
+      </div>
+    )
+  }
+
   return (
     <>
-      {/* Hamburger menu button - always visible */}
-      <Button variant="ghost" size="icon" onClick={toggleSidebar} className="fixed top-4 left-4 z-50">
-        {isOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
-      </Button>
+      {/* Overlay for mobile */}
+      {isOpen && (
+        <div 
+          className="fixed inset-0 z-40 bg-black/50 lg:hidden" 
+          onClick={closeSidebar}
+        />
+      )}
 
       {/* Sidebar */}
-      <div
-        className={`fixed inset-y-0 left-0 z-40 w-64 bg-background border-r border-border transform transition-transform duration-200 ease-in-out h-full ${
-          isOpen ? "translate-x-0" : "-translate-x-full"
-        } md:w-64 md:flex-shrink-0`}
+      <div 
+        className={`fixed inset-y-0 left-0 z-50 w-64 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border-r transform transition-transform duration-200 ease-in-out ${
+          isOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
       >
         <div className="flex flex-col h-full">
-          {/* Sidebar header */}
+          {/* Header */}
           <div className="flex items-center justify-between p-4 border-b">
-            <h1 className="text-xl font-bold">CollabEdge</h1>
-            <Button variant="ghost" size="icon" onClick={toggleSidebar} className="md:hidden">
-              <X className="h-5 w-5" />
+            <h2 className="text-lg font-semibold">CollabEdge</h2>
+            <Button variant="ghost" size="icon" onClick={closeSidebar}>
+              <X className="h-4 w-4" />
             </Button>
           </div>
 
-          {/* Sidebar content */}
-          <div className="flex-1 overflow-auto">
+          {/* Navigation */}
+          <div className="flex-1 overflow-y-auto">
             <div className="p-2">
-              <button
-                onClick={() => router.push("/")}
-                className={`flex items-center gap-2 w-full p-2 rounded-md hover:bg-accent text-left ${
-                  pathname === "/" ? "bg-accent" : ""
-                }`}
-              >
-                <Home className="h-4 w-4" />
-                <span>Home</span>
-              </button>
+              <div className="px-2 py-1">
+                <span className="text-xs font-medium text-muted-foreground">Navigation</span>
+              </div>
+              <div className="mt-1 space-y-1">
+                <button
+                  className={`flex items-center gap-2 w-full p-2 rounded-md hover:bg-accent text-left ${
+                    pathname === "/" ? "bg-accent" : ""
+                  }`}
+                  onClick={() => {
+                    router.push("/")
+                    closeSidebar()
+                  }}
+                >
+                  <Home className="h-4 w-4" />
+                  <span>Home</span>
+                </button>
+                <button
+                  className={`flex items-center gap-2 w-full p-2 rounded-md hover:bg-accent text-left ${
+                    pathname === "/create" ? "bg-accent" : ""
+                  }`}
+                  onClick={() => {
+                    router.push("/create")
+                    closeSidebar()
+                  }}
+                >
+                  <Plus className="h-4 w-4" />
+                  <span>Create Room</span>
+                </button>
+              </div>
             </div>
 
-            {isAuthenticated ? (
-              <>
-                <div className="p-2">
-                  <div className="flex items-center justify-between px-2 py-1">
-                    <span className="text-xs font-medium text-muted-foreground">My Workspaces</span>
-                    <Button variant="ghost" size="icon" className="h-5 w-5">
-                      <Plus className="h-4 w-4" />
-                    </Button>
-                  </div>
-                  <div className="mt-1 space-y-1">
-                    <button className="flex items-center gap-2 w-full p-2 rounded-md hover:bg-accent text-left">
-                      <FileText className="h-4 w-4" />
-                      <span>Data Dashboards</span>
-                    </button>
-                    <button className="flex items-center gap-2 w-full p-2 rounded-md hover:bg-accent text-left">
-                      <FileText className="h-4 w-4" />
-                      <span>Q2 Analytics</span>
-                    </button>
-                    <button className="flex items-center gap-2 w-full p-2 rounded-md hover:bg-accent text-left">
-                      <FileText className="h-4 w-4" />
-                      <span>Client Presentation</span>
-                    </button>
-                  </div>
+            {/* User Rooms Section */}
+            {isAuthenticated && (
+              <div className="p-2 border-t">
+                <div className="flex items-center justify-between px-2 py-1">
+                  <span className="text-xs font-medium text-muted-foreground">Your Rooms</span>
+                  <Button 
+                    variant="ghost" 
+                    size="icon" 
+                    className="h-6 w-6"
+                    onClick={fetchUserRooms}
+                    disabled={isLoadingRooms}
+                  >
+                    <RefreshCw className={`h-3 w-3 ${isLoadingRooms ? 'animate-spin' : ''}`} />
+                  </Button>
                 </div>
-
-                <div className="p-2">
-                  <div className="flex items-center justify-between px-2 py-1">
-                    <span className="text-xs font-medium text-muted-foreground">Recent Rooms</span>
-                    <Button variant="ghost" size="icon" className="h-5 w-5">
-                      <RefreshCw className="h-4 w-4" />
-                    </Button>
-                  </div>
-                  <div className="mt-1 space-y-1">
-                    {rooms.map((room) => (
+                
+                <div className="mt-1 space-y-1">
+                  {isLoadingRooms ? (
+                    <div className="flex items-center justify-center py-4">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    </div>
+                  ) : roomsError ? (
+                    <div className="p-2 text-xs text-red-500">
+                      {roomsError}
+                    </div>
+                  ) : rooms.length === 0 ? (
+                    <div className="p-2 text-xs text-muted-foreground">
+                      No rooms yet. Create one to get started!
+                    </div>
+                  ) : (
+                    rooms.map((room) => (
                       <button
                         key={room.id}
+                        className="flex items-center gap-2 w-full p-2 rounded-md hover:bg-accent text-left text-sm"
                         onClick={() => navigateToRoom(room.id)}
-                        className="flex items-center gap-2 w-full p-2 rounded-md hover:bg-accent text-left"
                       >
-                        {room.isLocked ? <span className="text-amber-500">🔒</span> : <span>📄</span>}
-                        <span>{room.name}</span>
+                        <FileText className="h-4 w-4 flex-shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <div className="truncate">{room.name}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {room.roomKey} • {room.documentCount} docs
+                          </div>
+                        </div>
+                        {room.isPasswordProtected && (
+                          <Lock className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+                        )}
                       </button>
-                    ))}
-                  </div>
+                    ))
+                  )}
                 </div>
-              </>
-            ) : (
-              <div className="p-2">
+              </div>
+            )}
+
+            {/* Authentication Section */}
+            {!isAuthenticated && (
+              <div className="p-2 border-t">
                 <div className="px-2 py-1">
                   <span className="text-xs font-medium text-muted-foreground">Account</span>
                 </div>
                 <div className="mt-1 space-y-1">
                   <button
                     className="flex items-center gap-2 w-full p-2 rounded-md hover:bg-accent text-left"
-                    onClick={() => setShowLoginDialog(true)}
+                    onClick={openLoginDialog}
                   >
                     <LogIn className="h-4 w-4" />
                     <span>Log In</span>
                   </button>
                   <button
                     className="flex items-center gap-2 w-full p-2 rounded-md hover:bg-accent text-left"
-                    onClick={() => setShowSignupDialog(true)}
+                    onClick={openSignupDialog}
                   >
                     <UserPlus className="h-4 w-4" />
                     <span>Sign Up</span>
@@ -187,9 +361,13 @@ export function AppSidebar({ defaultOpen = false }: AppSidebarProps) {
             )}
           </div>
 
-          {/* Sidebar footer */}
-          {isAuthenticated && (
+          {/* User info and logout */}
+          {isAuthenticated && user && (
             <div className="p-2 border-t">
+              <div className="px-2 py-2 mb-2">
+                <div className="text-sm font-medium">{user.username}</div>
+                <div className="text-xs text-muted-foreground">{user.email}</div>
+              </div>
               <button
                 onClick={handleLogout}
                 className="flex items-center gap-2 w-full p-2 rounded-md hover:bg-accent text-left"
@@ -202,40 +380,67 @@ export function AppSidebar({ defaultOpen = false }: AppSidebarProps) {
         </div>
       </div>
 
+      {/* Toggle button - show when sidebar is closed */}
+      {!isOpen && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="fixed top-4 left-4 z-40"
+          onClick={toggleSidebar}
+        >
+          <Menu className="h-5 w-5" />
+        </Button>
+      )}
+
       {/* Login Dialog */}
       <Dialog open={showLoginDialog} onOpenChange={setShowLoginDialog}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Log In</DialogTitle>
-            <DialogDescription>Log in to access your saved rooms</DialogDescription>
+            <DialogDescription>Log in to access your saved rooms and collaborate</DialogDescription>
           </DialogHeader>
+          
+          {(loginFormError || error) && (
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>
+                {loginFormError || error}
+              </AlertDescription>
+            </Alert>
+          )}
+          
           <form onSubmit={handleLogin} className="space-y-4 pt-4">
             <div className="space-y-2">
-              <label htmlFor="email" className="text-sm font-medium">
+              <label htmlFor="login-email" className="text-sm font-medium">
                 Email
               </label>
               <Input
-                id="email"
+                id="login-email"
                 type="email"
                 value={loginEmail}
                 onChange={(e) => setLoginEmail(e.target.value)}
                 required
+                disabled={isLoading}
               />
             </div>
             <div className="space-y-2">
-              <label htmlFor="password" className="text-sm font-medium">
+              <label htmlFor="login-password" className="text-sm font-medium">
                 Password
               </label>
               <Input
-                id="password"
+                id="login-password"
                 type="password"
                 value={loginPassword}
                 onChange={(e) => setLoginPassword(e.target.value)}
                 required
+                disabled={isLoading}
               />
             </div>
             <DialogFooter>
-              <Button type="submit">Log In</Button>
+              <Button type="submit" disabled={isLoading}>
+                {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Log In
+              </Button>
             </DialogFooter>
           </form>
         </DialogContent>
@@ -245,9 +450,19 @@ export function AppSidebar({ defaultOpen = false }: AppSidebarProps) {
       <Dialog open={showSignupDialog} onOpenChange={setShowSignupDialog}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Create Account</DialogTitle>
-            <DialogDescription>Sign up to save and manage your rooms</DialogDescription>
+            <DialogTitle>Sign Up</DialogTitle>
+            <DialogDescription>Create an account to save your rooms and collaborate</DialogDescription>
           </DialogHeader>
+          
+          {(signupFormError || error) && (
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>
+                {signupFormError || error}
+              </AlertDescription>
+            </Alert>
+          )}
+          
           <form onSubmit={handleSignup} className="space-y-4 pt-4">
             <div className="space-y-2">
               <label htmlFor="signup-username" className="text-sm font-medium">
@@ -255,9 +470,11 @@ export function AppSidebar({ defaultOpen = false }: AppSidebarProps) {
               </label>
               <Input
                 id="signup-username"
+                type="text"
                 value={signupUsername}
                 onChange={(e) => setSignupUsername(e.target.value)}
                 required
+                disabled={isLoading}
               />
             </div>
             <div className="space-y-2">
@@ -270,6 +487,7 @@ export function AppSidebar({ defaultOpen = false }: AppSidebarProps) {
                 value={signupEmail}
                 onChange={(e) => setSignupEmail(e.target.value)}
                 required
+                disabled={isLoading}
               />
             </div>
             <div className="space-y-2">
@@ -282,10 +500,15 @@ export function AppSidebar({ defaultOpen = false }: AppSidebarProps) {
                 value={signupPassword}
                 onChange={(e) => setSignupPassword(e.target.value)}
                 required
+                disabled={isLoading}
+                minLength={6}
               />
             </div>
             <DialogFooter>
-              <Button type="submit">Sign Up</Button>
+              <Button type="submit" disabled={isLoading}>
+                {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Sign Up
+              </Button>
             </DialogFooter>
           </form>
         </DialogContent>

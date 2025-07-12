@@ -6,12 +6,19 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     console.log('Join room request body:', body);
 
+    // Forward authorization header if present
+    const authHeader = request.headers.get('authorization');
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    };
+    if (authHeader) {
+      headers.Authorization = authHeader;
+    }
+
     // Forward request to the backend
     const backendResponse = await fetch('http://localhost:8080/api/rooms/join', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers,
       body: JSON.stringify(body),
     });
 

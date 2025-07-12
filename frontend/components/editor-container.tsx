@@ -135,24 +135,48 @@ export function EditorContainer({
     }
   }, [isConnected]); // Removed sendMessage and roomId from dependencies to prevent loops
 
-  // Get room information from localStorage
+  // Get room information from localStorage or API
   useEffect(() => {
     if (!isBrowser) return;
     
-    const storedRoom = safelyGetFromLocalStorage('currentRoom');
-    if (storedRoom) {
+    const loadRoomMetadata = async () => {
+      // First try localStorage
+      const storedRoom = safelyGetFromLocalStorage('currentRoom');
+      if (storedRoom) {
+        try {
+          const roomData = JSON.parse(storedRoom)
+          if (roomData.roomKey && roomData.name) {
+            setRoomKey(roomData.roomKey)
+            setRoomName(roomData.name)
+            console.log(`Loaded room metadata from localStorage: ${roomData.name} (${roomData.roomKey})`)
+            return;
+          }
+        } catch (e) {
+          console.error('Error parsing room data:', e)
+        }
+      }
+      
+      // Fallback: fetch room metadata from API
       try {
-        const roomData = JSON.parse(storedRoom)
-        if (roomData.roomKey) {
-          setRoomKey(roomData.roomKey)
+        console.log(`Fetching room metadata from API for room ${roomId}...`)
+        const response = await fetch(`/api/rooms/${roomId}`)
+        if (response.ok) {
+          const roomData = await response.json()
+          setRoomKey(roomData.roomKey || "")
+          setRoomName(roomData.name || "")
+          
+          // Store it for future use
+          localStorage.setItem('currentRoom', JSON.stringify(roomData))
+          console.log(`Loaded and stored room metadata from API: ${roomData.name} (${roomData.roomKey})`)
+        } else {
+          console.warn(`Failed to fetch room metadata for room ${roomId}, status: ${response.status}`)
         }
-        if (roomData.name) {
-          setRoomName(roomData.name)
-        }
-      } catch (e) {
-        console.error('Error parsing room data:', e)
+      } catch (error) {
+        console.error(`Error fetching room metadata for room ${roomId}:`, error)
       }
     }
+    
+    loadRoomMetadata()
   }, [roomId])
 
   // Ensure localStorage operations are only performed in the browser

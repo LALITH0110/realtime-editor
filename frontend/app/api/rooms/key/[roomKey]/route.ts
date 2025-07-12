@@ -10,12 +10,19 @@ export async function GET(
     const roomKey = params.roomKey;
     console.log(`Checking room key: ${roomKey}`);
 
+    // Forward authorization header if present
+    const authHeader = request.headers.get('authorization');
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    };
+    if (authHeader) {
+      headers.Authorization = authHeader;
+    }
+
     // Forward request to the backend
     const backendResponse = await fetch(`http://localhost:8080/api/rooms/key/${roomKey}`, {
       method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers,
     });
 
     if (!backendResponse.ok) {

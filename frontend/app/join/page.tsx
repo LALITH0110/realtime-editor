@@ -12,10 +12,13 @@ import { KeyRound, Lock } from "lucide-react"
 import { AlertCircle } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { roomHasPassword, getRoomDocuments, storeRoomState, storeRoomDocuments } from '@/lib/dev-storage'
+import { useAuth } from "@/contexts/AuthContext"
+import { authService } from "@/lib/auth-service"
 
 export default function JoinRoomPage() {
   const router = useRouter()
   const searchParams = useSearchParams()
+  const { isAuthenticated, user } = useAuth()
   
   const [roomKey, setRoomKey] = useState(searchParams.get('roomKey') || '')
   const [username, setUsername] = useState('')
@@ -26,6 +29,18 @@ export default function JoinRoomPage() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
   const [step, setStep] = useState<'roomKey' | 'password'>('roomKey')
+
+  // Set username from authenticated user or localStorage
+  useEffect(() => {
+    if (isAuthenticated && user) {
+      setUsername(user.username)
+    } else {
+      const savedUsername = localStorage.getItem('username');
+      if (savedUsername) {
+        setUsername(savedUsername);
+      }
+    }
+  }, [isAuthenticated, user])
 
   // Check if room exists and if it's password protected
   useEffect(() => {
@@ -38,36 +53,18 @@ export default function JoinRoomPage() {
           
           if (response.ok) {
             const data = await response.json();
-            console.log('Room data:', data);
+            console.log('Room data from API:', data);
             setRoomData(data);
             
-            // Set password protection based on actual room data
-            // Check both possible field names
+            // Set password protection based on actual room data from the API
+            // Check both property names for compatibility
             const needsPassword = data.isPasswordProtected === true || data.passwordProtected === true;
             setIsPasswordProtected(needsPassword);
-            console.log(`Room ${roomKey} password protection: ${needsPassword ? 'Yes' : 'No'}`);
+            console.log(`Room ${roomKey} password protection from API: ${needsPassword ? 'Yes' : 'No'}`);
+            console.log(`Room ${roomKey} isPasswordProtected: ${data.isPasswordProtected}, passwordProtected: ${data.passwordProtected}`);
             
             // Reset password step when checking a new room
             setShowPasswordStep(false);
-            
-            // Also force check with our test API
-            try {
-              // Use a direct fetch instead of the function to avoid dependency issues
-              const testResponse = await fetch(`/api/test/password/${roomKey}`);
-              if (testResponse.ok) {
-                const testData = await testResponse.json();
-                console.log(`Force check for room ${roomKey}:`, testData);
-                
-                // Update state based on the test API response
-                const testNeedsPassword = testData.hasPassword === true;
-                if (testNeedsPassword !== needsPassword) {
-                  console.log(`Force check differs from API: ${testNeedsPassword} vs ${needsPassword}`);
-                  setIsPasswordProtected(testNeedsPassword);
-                }
-              }
-            } catch (err) {
-              console.error('Error in force check during room check:', err);
-            }
           } else {
             // Reset password protection if room not found
             setRoomData(null);
@@ -104,14 +101,7 @@ export default function JoinRoomPage() {
     }
   }, []);
 
-  // Check if room is password protected when room key changes
-  useEffect(() => {
-    if (roomKey.length === 6) {
-      const hasPassword = roomHasPassword(roomKey);
-      console.log(`Checking if room ${roomKey} is password protected: ${hasPassword}`);
-      setIsPasswordProtected(hasPassword);
-    }
-  }, [roomKey]);
+  // Room password protection is now handled by the main checkRoom effect above
 
   const handleRoomKeySubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -125,12 +115,10 @@ export default function JoinRoomPage() {
       return;
     }
 
-    // Check if the room is password protected
-    const hasPassword = roomHasPassword(roomKey);
-    console.log(`Room ${roomKey} password protected: ${hasPassword}`);
-    setIsPasswordProtected(hasPassword);
+    // Use the password protection status from the API data
+    console.log(`Room ${roomKey} password protected (from state): ${isPasswordProtected}`);
 
-    if (hasPassword) {
+    if (isPasswordProtected) {
       // If room is password protected, move to password step
       setStep('password');
     } else {
@@ -156,28 +144,39 @@ export default function JoinRoomPage() {
     try {
       console.log(`Joining room ${roomKey} with username ${username}${isPasswordProtected ? ' and password' : ''}`);
       
-      const response = await fetch('/api/rooms/join', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          roomKey,
-          username,
-          password: isPasswordProtected ? password : undefined,
-        }),
-      });
+      let room;
+      
+      // Use authenticated API if user is logged in, otherwise use guest API
+      if (isAuthenticated) {
+        console.log('Joining room with authenticated user')
+        room = await authService.joinRoom(roomKey, isPasswordProtected ? password : undefined)
+      } else {
+        console.log('Joining room as guest user')
+        const response = await fetch('/api/rooms/join', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            roomKey,
+            username,
+            password: isPasswordProtected ? password : undefined,
+          }),
+        });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || `Failed to join room: ${response.status}`);
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || `Failed to join room: ${response.status}`);
+        }
+
+        room = await response.json();
       }
-
-      const room = await response.json();
       console.log('Room joined successfully:', room);
       
       // Store username and current room info
-      localStorage.setItem('username', username);
+      if (!isAuthenticated) {
+        localStorage.setItem('username', username);
+      }
       localStorage.setItem('currentRoom', JSON.stringify(room));
       
       // Fetch documents from the database first
@@ -258,42 +257,7 @@ export default function JoinRoomPage() {
     setError('');
   };
 
-  // Function to force check if a room is password protected
-  const forceCheckPassword = async () => {
-    if (!roomKey || roomKey.length < 3) return;
-    
-    try {
-      const response = await fetch(`/api/test/password/${roomKey}`);
-      if (response.ok) {
-        const data = await response.json();
-        console.log(`Force check for room ${roomKey}:`, data);
-        
-        // Update state based on the test API response
-        const needsPassword = data.hasPassword === true;
-        setIsPasswordProtected(needsPassword);
-        console.log(`Force check result: Room ${roomKey} needs password: ${needsPassword}`);
-        
-        // If we're already in the password step but the room doesn't need a password,
-        // go back to the initial step
-        if (showPasswordStep && !needsPassword) {
-          setShowPasswordStep(false);
-        }
-      }
-    } catch (err) {
-      console.error('Error in force check:', err);
-    }
-  };
-
-  // Add a button to trigger the force check in the debug UI
-  const DebugForceCheckButton = () => (
-    <button 
-      type="button" 
-      onClick={forceCheckPassword}
-      className="bg-purple-800 text-white px-2 py-1 rounded text-xs"
-    >
-      Force Check
-    </button>
-  );
+  // Removed debug functions - using only real API data now
 
   return (
     <div className="flex h-screen">
@@ -386,8 +350,8 @@ export default function JoinRoomPage() {
                         console.log('Add password response:', data);
                         alert(`Password "${data.password}" added to room ${roomKey}`);
                         
-                        // Force refresh the room data
-                        await forceCheckPassword();
+                        // Force refresh the room data by reloading the page
+                        window.location.reload();
                       } catch (err) {
                         console.error('Error adding password:', err);
                       }
@@ -396,7 +360,6 @@ export default function JoinRoomPage() {
                   >
                     Add Password
                   </button>
-                  <DebugForceCheckButton />
                 </div>
               </div>
             )}

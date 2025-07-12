@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { AppSidebar } from "@/components/app-sidebar"
 import { Button } from "@/components/ui/button"
@@ -14,9 +14,12 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { AlertCircle } from 'lucide-react'
 import { Switch } from '@/components/ui/switch'
 import { storeRoomPassword } from '@/lib/dev-storage'
+import { useAuth } from "@/contexts/AuthContext"
+import { authService } from "@/lib/auth-service"
 
 export default function CreateRoomPage() {
   const router = useRouter()
+  const { isAuthenticated, user } = useAuth()
   const [roomName, setRoomName] = useState("")
   const [roomKey, setRoomKey] = useState(() => {
     // Generate a random room key
@@ -27,17 +30,23 @@ export default function CreateRoomPage() {
     }
     return result
   })
-  const [username, setUsername] = useState(() => {
-    // Get username from localStorage if available
-    if (typeof window !== 'undefined') {
-      return localStorage.getItem('username') || ""
-    }
-    return ""
-  })
+  const [username, setUsername] = useState("")
   const [isPasswordProtected, setIsPasswordProtected] = useState(false)
   const [password, setPassword] = useState("")
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState("")
+
+  // Set username from authenticated user or localStorage
+  useEffect(() => {
+    if (isAuthenticated && user) {
+      setUsername(user.username)
+    } else if (typeof window !== 'undefined') {
+      const storedUsername = localStorage.getItem('username')
+      if (storedUsername) {
+        setUsername(storedUsername)
+      }
+    }
+  }, [isAuthenticated, user])
 
   const handleGenerateNewKey = () => {
     const characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -79,30 +88,47 @@ export default function CreateRoomPage() {
         storeRoomPassword(roomKey, password)
       }
 
-      // Create the room on the backend
-      const response = await fetch('/api/rooms', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+      let data;
+      
+      // Use authenticated API if user is logged in, otherwise use guest API
+      if (isAuthenticated) {
+        console.log('Creating room with authenticated user')
+        data = await authService.createRoom({
           name: roomName,
           roomKey: roomKey,
-          username: username,
           passwordProtected: isPasswordProtected,
           password: isPasswordProtected ? password : undefined,
-        }),
-      })
-      
-      if (!response.ok) {
-        throw new Error(`Failed to create room: ${response.status}`)
+        })
+      } else {
+        console.log('Creating room as guest user')
+        // Fallback to guest room creation
+        const response = await fetch('/api/rooms', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: roomName,
+            roomKey: roomKey,
+            username: username,
+            passwordProtected: isPasswordProtected,
+            password: isPasswordProtected ? password : undefined,
+          }),
+        })
+        
+        if (!response.ok) {
+          throw new Error(`Failed to create room: ${response.status}`)
+        }
+        
+        data = await response.json()
       }
       
-      const data = await response.json()
       console.log('Room created successfully:', data)
       
       // Store room info and username in localStorage
-      localStorage.setItem('username', username)
+      if (!isAuthenticated) {
+        localStorage.setItem('username', username)
+      }
       localStorage.setItem('currentRoom', JSON.stringify(data))
       
       // Store the password again after successful room creation
@@ -111,11 +137,13 @@ export default function CreateRoomPage() {
         console.log(`Storing password for created room ${data.roomKey}: "${password}"`)
         storeRoomPassword(data.roomKey, password)
         
-        // Verify the password was stored correctly
-        const testUrl = `/api/test/add-password/${data.roomKey}?password=${encodeURIComponent(password)}`
-        const testResponse = await fetch(testUrl)
-        if (testResponse.ok) {
-          console.log(`Verified password storage for room ${data.roomKey}`)
+        // Verify the password was stored correctly (only for guest users)
+        if (!isAuthenticated) {
+          const testUrl = `/api/test/add-password/${data.roomKey}?password=${encodeURIComponent(password)}`
+          const testResponse = await fetch(testUrl)
+          if (testResponse.ok) {
+            console.log(`Verified password storage for room ${data.roomKey}`)
+          }
         }
       }
       

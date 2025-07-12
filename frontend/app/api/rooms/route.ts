@@ -1,14 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { storeRoomPassword, getRoomPassword } from '@/lib/dev-storage';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
+    // Forward authorization header if present
+    const authHeader = request.headers.get('authorization');
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    };
+    if (authHeader) {
+      headers.Authorization = authHeader;
+    }
+
     // Proxy the request to the backend
     const response = await fetch('http://localhost:8080/api/rooms', {
       method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers,
     });
 
     if (!response.ok) {
@@ -53,12 +60,19 @@ export async function POST(request: NextRequest) {
       }
     }
     
+    // Forward authorization header if present
+    const authHeader = request.headers.get('authorization');
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    };
+    if (authHeader) {
+      headers.Authorization = authHeader;
+    }
+
     // Proxy the request to the backend
     const response = await fetch('http://localhost:8080/api/rooms', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers,
       body: JSON.stringify(body),
     });
 

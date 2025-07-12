@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AppSidebar } from '@/components/app-sidebar';
 import { EditorSelection } from '@/components/editor-selection';
-import { storeRoomState, getRoomState, getRoomDocuments } from '@/lib/dev-storage';
+import { storeRoomState, storeRoomDocuments, getRoomState, getRoomDocuments } from '@/lib/dev-storage';
 
 interface EditorSelectionPageProps {
   params: Promise<{
@@ -36,28 +36,52 @@ export default function EditorSelectionPage({ params }: EditorSelectionPageProps
         setIsLoading(true);
         console.log(`Select page: Checking for documents in room ${roomId}...`);
         
-        // Check multiple storage locations for documents
-        // 1. Direct localStorage check
-        const directKey = `direct_room_${roomId}_documents`;
-        const directData = localStorage.getItem(directKey);
         let documents = [];
         
-        if (directData) {
-          try {
-            const parsed = JSON.parse(directData);
-            if (parsed && parsed.length > 0) {
-              documents = parsed;
-              console.log(`Select page: Found ${documents.length} documents in direct localStorage.`);
+        // 1. First, try to fetch documents from the database
+        try {
+          console.log(`Select page: Fetching documents from database for room ${roomId}...`);
+          const docsResponse = await fetch(`/api/rooms/${roomId}/documents`);
+          if (docsResponse.ok) {
+            const dbDocuments = await docsResponse.json();
+            console.log(`Select page: Found ${dbDocuments.length} documents in database for room ${roomId}`);
+            
+            if (dbDocuments.length > 0) {
+              documents = dbDocuments;
+              // Store documents locally for offline use
+              storeRoomDocuments(roomId, documents);
+              console.log(`Select page: Stored ${documents.length} documents locally for room ${roomId}`);
             }
-          } catch (e) {
-            console.error('Error parsing documents from direct localStorage:', e);
+          } else {
+            console.log(`Select page: No documents found in database for room ${roomId}, status: ${docsResponse.status}`);
           }
+        } catch (dbError) {
+          console.error('Select page: Error fetching documents from database:', dbError);
         }
         
-        // 2. If no documents found in direct storage, use the robust function
+        // 2. If no documents found in database, check localStorage
         if (documents.length === 0) {
-          documents = getRoomDocuments(roomId);
-          console.log(`Select page: Found ${documents.length} documents using getRoomDocuments.`);
+          // Direct localStorage check
+          const directKey = `direct_room_${roomId}_documents`;
+          const directData = localStorage.getItem(directKey);
+          
+          if (directData) {
+            try {
+              const parsed = JSON.parse(directData);
+              if (parsed && parsed.length > 0) {
+                documents = parsed;
+                console.log(`Select page: Found ${documents.length} documents in direct localStorage.`);
+              }
+            } catch (e) {
+              console.error('Error parsing documents from direct localStorage:', e);
+            }
+          }
+          
+          // 3. If still no documents, use the robust function
+          if (documents.length === 0) {
+            documents = getRoomDocuments(roomId);
+            console.log(`Select page: Found ${documents.length} documents using getRoomDocuments.`);
+          }
         }
         
         if (documents.length > 0) {

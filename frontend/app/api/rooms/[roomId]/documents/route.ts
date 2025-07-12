@@ -13,12 +13,19 @@ export async function GET(
   // Forward to backend
   const backendUrl = `http://localhost:8080/api/rooms/${roomId}/documents`;
   
+  // Forward authorization header if present
+  const authHeader = request.headers.get('authorization');
+  const headers: HeadersInit = {
+    'Content-Type': 'application/json',
+  };
+  if (authHeader) {
+    headers.Authorization = authHeader;
+  }
+
   try {
     const response = await fetch(backendUrl, {
       method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers,
     });
     
     const data = await response.json();
@@ -47,11 +54,18 @@ export async function POST(
     // Forward to backend
     const backendUrl = `http://localhost:8080/api/rooms/${roomId}/documents`;
     
+    // Forward authorization header if present
+    const authHeader = request.headers.get('authorization');
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    };
+    if (authHeader) {
+      headers.Authorization = authHeader;
+    }
+
     const response = await fetch(backendUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers,
       body: JSON.stringify(body),
     });
     
